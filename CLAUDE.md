@@ -45,6 +45,33 @@ independent of the Spexsure SaaS product itself. Not part of the spexsure.com co
   explicitly deferred to Phase 2.** Main blocker to validate first: most residential/office ISPs block outbound
   port 25, which this technique requires — test that before investing further.
 
+## NEXT TASK — dual-channel sending (scoped 2026-09-23, not started)
+Current build only ever sends a standard LinkedIn **connection request + note**
+(`sendConnectionRequest()` in `lib/linkedin/actions.ts`, via a normal `linkedin.com/in/...` profile page).
+The user flagged this as wrong for part of the intended use: some lists should go out as regular connection
+requests, but lists targeting people reached via **Sales Navigator should use InMail** instead — a proper
+long-form intro message, not a short connect note.
+
+What needs to change:
+- **Per-list channel choice.** Add a `channel: "connection_request" | "inmail"` field to `OutreachList`
+  (`lib/store.ts`), surfaced as a selector on the Lists page next to source type.
+- **Connection request** stays as-is: short note (~300 char cap), sent via the existing profile-page Connect
+  flow, works for any LinkedIn account.
+- **InMail is a different automation surface entirely** — it's a Sales Navigator feature, sent through
+  Sales Navigator's own messaging UI (`linkedin.com/sales/...`, not `linkedin.com/in/...`), consumes InMail
+  credits, doesn't require the recipient to accept anything first, and supports a subject + long-form body
+  (unlike the short connection note). Needs its own Playwright function, e.g. `sendInmail()` in
+  `lib/linkedin/actions.ts` — not written yet. Likely also needs a subject field added to the list's draft
+  message data, not just a body.
+- **Requires the user's LinkedIn account to actually have Sales Navigator** for InMail lists to work at all —
+  worth a settings-level check/warning rather than a silent failure.
+- **Agent 2 impact:** replies to InMail messages land in Sales Navigator's own inbox
+  (`linkedin.com/sales/inbox`), which may be a different page/DOM than the regular messaging inbox
+  (`linkedin.com/messaging/`) that `readRecentInboxMessages()` currently reads. Agent 2 likely needs to check
+  both inboxes, tagging which channel each reply came in on.
+- This should land **before** running the live 2-person test, since which channel is used changes what
+  actually gets sent.
+
 ## Tech decision: web app on localhost, not a packaged install
 Matches the rest of the Heuristicworks stack (Spexsure, ArcAI, Meridian) — Next.js dev server on `localhost`,
 no Electron/native packaging. Rationale: zero packaging/signing overhead, reuses existing tooling/conventions,
@@ -204,28 +231,33 @@ Next.js will pick the next free port if 3000 is taken (was on 3001 during this b
              Playwright driving the user's own real session, chosen over a paid service (Unipile) for cost
 [2026-09-23] HubSpot integration deferred indefinitely; dashboard is the system of record for now
 [2026-09-23] Lightweight self-built email verifier (DNS MX + SMTP handshake) deferred to Phase 2
+[2026-09-23] Decided sending must support two channels per list: plain LinkedIn connection request (current
+             build) for LinkedIn-only contacts, and Sales Navigator InMail for long-form intros where the
+             account has Sales Navigator — scoped, not built, next task for the following session
 
 ---
 
-## → HANDOFF (session paused 2026-09-23)
+## → HANDOFF (session paused 2026-09-23, updated same day)
 
-**Repo:** clean, everything committed and pushed. `main` @ `ffb789c` on `gr8-balls-of-fire/linkedinOutReach`
-(public). Dev server stopped before closing — nothing left running.
+**Repo:** clean, everything committed and pushed to `main` on `gr8-balls-of-fire/linkedinOutReach` (public).
+Dev server stopped — nothing left running.
 
-**Immediate next step is on the user, not code:** run through "How to actually test this" above —
-`npm run connect-linkedin` (real login, one time), add a CSV-import list with the 2 test contacts, click
-"Run Agent 1 now" on the Dashboard, then "Check for replies now" on the Digest page once they reply.
+**Start next session on "NEXT TASK — dual-channel sending" above, not the live test.** The user caught that
+Agent 1 only ever sends a plain LinkedIn connection request, but the intent is: plain-LinkedIn contacts get a
+connection request, Sales-Navigator-reachable contacts should get InMail (long-form intro). That's a real
+behavior + data-model change (per-list `channel` field, a new `sendInmail()` automation function, Agent 2
+needing to check a second inbox for InMail replies) — see that section for the full breakdown. Build this
+**before** running the live 2-person test, since it changes what actually gets sent.
 
-**When resuming, ask for the output of that test first** — specifically whatever printed in the "Run Agent 1
-now" / "Check for replies now" panels. That output determines the next real task:
-- If `sendConnectionRequest` or `readRecentInboxMessages` (`lib/linkedin/actions.ts`) threw or silently no-opped,
-  the LinkedIn DOM selectors need fixing — this was flagged as the most likely failure point, untested against
-  a live account.
-- If it worked end-to-end, next candidates are: the Inno Setup installer + portable Node + hidden `.vbs`
-  launcher (scoped in conversation, not built), or wiring `scripts/register-tasks.ps1` into that installer.
-- Phase 2 items still on the shelf: Agent 3 (LinkedIn → verified email), the self-built SMTP email verifier
-  (needs a port-25 reachability check from the user's network first), `search_url` list scraping (currently
-  only `csv`-sourced leads are actually contacted).
+**After dual-channel sending is in**, resume the original plan: run through "How to actually test this" —
+`npm run connect-linkedin`, add a list with the 2 test contacts, "Run Agent 1 now", then "Check for replies
+now" once they reply. Ask the user for that output first if they say testing already happened — it determines
+whether the next fix is DOM-selector repair (`lib/linkedin/actions.ts`, flagged as the likely failure point,
+still untested against a live account) or something else.
+
+**Still on the shelf, unchanged:** the Inno Setup installer + portable Node + hidden `.vbs` launcher (scoped,
+not built), Agent 3 (LinkedIn → verified email), the self-built SMTP email verifier (needs a port-25
+reachability check first), `search_url` list scraping (only `csv`-sourced leads are contacted today).
 
 **Don't re-litigate these decisions** unless something concrete changed: free/self-hosted over paid services
 throughout (Playwright over Unipile, Task Scheduler over a background service, Inno Setup over Electron/Tauri),
