@@ -204,3 +204,29 @@ Next.js will pick the next free port if 3000 is taken (was on 3001 during this b
              Playwright driving the user's own real session, chosen over a paid service (Unipile) for cost
 [2026-09-23] HubSpot integration deferred indefinitely; dashboard is the system of record for now
 [2026-09-23] Lightweight self-built email verifier (DNS MX + SMTP handshake) deferred to Phase 2
+
+---
+
+## → HANDOFF (session paused 2026-09-23)
+
+**Repo:** clean, everything committed and pushed. `main` @ `ffb789c` on `gr8-balls-of-fire/linkedinOutReach`
+(public). Dev server stopped before closing — nothing left running.
+
+**Immediate next step is on the user, not code:** run through "How to actually test this" above —
+`npm run connect-linkedin` (real login, one time), add a CSV-import list with the 2 test contacts, click
+"Run Agent 1 now" on the Dashboard, then "Check for replies now" on the Digest page once they reply.
+
+**When resuming, ask for the output of that test first** — specifically whatever printed in the "Run Agent 1
+now" / "Check for replies now" panels. That output determines the next real task:
+- If `sendConnectionRequest` or `readRecentInboxMessages` (`lib/linkedin/actions.ts`) threw or silently no-opped,
+  the LinkedIn DOM selectors need fixing — this was flagged as the most likely failure point, untested against
+  a live account.
+- If it worked end-to-end, next candidates are: the Inno Setup installer + portable Node + hidden `.vbs`
+  launcher (scoped in conversation, not built), or wiring `scripts/register-tasks.ps1` into that installer.
+- Phase 2 items still on the shelf: Agent 3 (LinkedIn → verified email), the self-built SMTP email verifier
+  (needs a port-25 reachability check from the user's network first), `search_url` list scraping (currently
+  only `csv`-sourced leads are actually contacted).
+
+**Don't re-litigate these decisions** unless something concrete changed: free/self-hosted over paid services
+throughout (Playwright over Unipile, Task Scheduler over a background service, Inno Setup over Electron/Tauri),
+JSON files over a database, no LLM calls yet anywhere in the pipeline, HubSpot out of scope.
