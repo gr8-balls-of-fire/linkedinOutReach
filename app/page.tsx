@@ -35,6 +35,8 @@ export default function DashboardPage() {
   const [run, setRun] = useState<TodayRun | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [pausing, setPausing] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runOutput, setRunOutput] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/run/today").then((r) => r.json()).then(setRun);
@@ -54,6 +56,16 @@ export default function DashboardPage() {
     setPausing(false);
   }
 
+  async function runNow() {
+    setRunning(true);
+    setRunOutput(null);
+    const res = await fetch("/api/agents/run-outbound", { method: "POST" });
+    const data = await res.json();
+    setRunOutput(data.output);
+    setRunning(false);
+    fetch("/api/run/today").then((r) => r.json()).then(setRun);
+  }
+
   if (!run || !health) {
     return <div className="text-sm text-gray-400">Loading…</div>;
   }
@@ -65,18 +77,34 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-gray-900">Today's Run</h1>
           <p className="text-sm text-gray-500">Agent 1 — outbound connection requests across all active lists</p>
         </div>
-        <button
-          onClick={togglePause}
-          disabled={pausing}
-          className={`rounded-md px-4 py-2 text-sm font-medium ${
-            run.paused
-              ? "bg-brand-500 text-white hover:bg-brand-600"
-              : "bg-red-50 text-red-700 hover:bg-red-100"
-          }`}
-        >
-          {run.paused ? "Resume sending" : "Pause sending"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={runNow}
+            disabled={running || run.paused}
+            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+          >
+            {running ? "Running Agent 1…" : "Run Agent 1 now"}
+          </button>
+          <button
+            onClick={togglePause}
+            disabled={pausing}
+            className={`rounded-md px-4 py-2 text-sm font-medium ${
+              run.paused
+                ? "bg-brand-500 text-white hover:bg-brand-600"
+                : "bg-red-50 text-red-700 hover:bg-red-100"
+            }`}
+          >
+            {run.paused ? "Resume sending" : "Pause sending"}
+          </button>
+        </div>
       </div>
+
+      {runOutput && (
+        <Card>
+          <CardTitle>Last manual run output</CardTitle>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs text-gray-600">{runOutput}</pre>
+        </Card>
+      )}
 
       <div className="grid grid-cols-3 gap-4">
         <Card className="col-span-2">

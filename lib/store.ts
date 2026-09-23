@@ -1,11 +1,23 @@
-// In-memory stub "backend". Resets on dev server restart.
-// Swap these functions for real Unipile/HubSpot-backed calls later —
-// route handlers in app/api/** are the seam that stays stable.
+// File-backed store — data/*.json on disk, survives restarts and process kills.
+// Same function signatures as the original in-memory stub, so route handlers
+// in app/api/** and the agent scripts (scripts/agent1-outbound.mjs,
+// scripts/agent2-digest.mjs) share this one seam.
+
+import { ensureDataDir, listFiles, readJson, todayIso, writeJson } from "./data-file";
+
+export type CsvLead = {
+  name: string;
+  title?: string;
+  company?: string;
+  linkedinUrl?: string;
+};
 
 export type OutreachList = {
   id: string;
   name: string;
-  searchUrl: string;
+  sourceType: "search_url" | "csv";
+  searchUrl?: string;
+  leads?: CsvLead[];
   draftMessage: string;
   active: boolean;
   priority: number;
@@ -38,6 +50,7 @@ export type RunLogEntry = {
 export type PendingRequest = {
   id: string;
   name: string;
+  linkedinUrl?: string;
   listId: string;
   listName: string;
   sentAt: string;
@@ -67,10 +80,11 @@ export type NotificationSettings = {
   instantAlertOnMeetingRequest: boolean;
 };
 
-const lists: OutreachList[] = [
+const DEFAULT_LISTS: OutreachList[] = [
   {
     id: "list-1",
     name: "CFOs — Fintech",
+    sourceType: "search_url",
     searchUrl: "https://www.linkedin.com/sales/search/people?query=cfo+fintech",
     draftMessage:
       "Hi {{firstName}}, saw your work leading finance at {{company}} — would love to connect and share something relevant to fintech ops teams.",
@@ -80,23 +94,16 @@ const lists: OutreachList[] = [
   {
     id: "list-2",
     name: "VP Eng — Series B SaaS",
+    sourceType: "search_url",
     searchUrl: "https://www.linkedin.com/sales/search/people?query=vp+engineering+series+b",
     draftMessage:
       "Hi {{firstName}}, noticed {{company}} is scaling fast — connecting with a few engineering leaders in this space.",
     active: true,
     priority: 2,
   },
-  {
-    id: "list-3",
-    name: "Product Leaders — Healthcare",
-    searchUrl: "https://www.linkedin.com/sales/search/people?query=product+lead+healthcare",
-    draftMessage: "Hi {{firstName}}, would love to connect given your background in healthcare product.",
-    active: false,
-    priority: 3,
-  },
 ];
 
-const settings: GlobalSettings = {
+const DEFAULT_SETTINGS: GlobalSettings = {
   dailyCap: 20,
   weeklyCap: 100,
   sendDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
@@ -105,174 +112,211 @@ const settings: GlobalSettings = {
   delayMaxMinutes: 10,
   autoWithdrawDays: 14,
   pendingCapWarningAt: 500,
-  linkedinConnected: true,
-  hubspotConnected: true,
+  linkedinConnected: false,
+  hubspotConnected: false,
 };
 
-const runLog: RunLogEntry[] = [
-  { id: "r1", name: "Jordan Lee", title: "CFO", listId: "list-1", listName: "CFOs — Fintech", timestamp: "09:04 AM", status: "sent" },
-  { id: "r2", name: "Priya Nair", title: "VP Engineering", listId: "list-2", listName: "VP Eng — Series B SaaS", timestamp: "09:11 AM", status: "sent" },
-  { id: "r3", name: "Sam Whitfield", title: "CFO", listId: "list-1", listName: "CFOs — Fintech", timestamp: "09:19 AM", status: "skipped-duplicate", reason: "Already contacted 2026-08-30" },
-  { id: "r4", name: "Devon Park", title: "VP Engineering", listId: "list-2", listName: "VP Eng — Series B SaaS", timestamp: "09:27 AM", status: "sent" },
-  { id: "r5", name: "Alexis Romero", title: "CFO", listId: "list-1", listName: "CFOs — Fintech", timestamp: "09:35 AM", status: "failed", reason: "LinkedIn API timeout" },
-];
-
-const pending: PendingRequest[] = [
-  { id: "p1", name: "Morgan Ito", listId: "list-1", listName: "CFOs — Fintech", sentAt: "2026-09-10", ageDays: 13 },
-  { id: "p2", name: "Casey Nguyen", listId: "list-2", listName: "VP Eng — Series B SaaS", sentAt: "2026-09-08", ageDays: 15 },
-  { id: "p3", name: "Riley Chen", listId: "list-1", listName: "CFOs — Fintech", sentAt: "2026-09-15", ageDays: 8 },
-];
-
-const digestByDate: Record<string, DigestReply[]> = {
-  "2026-09-22": [
-    {
-      id: "d1",
-      sender: "Jordan Lee",
-      listId: "list-1",
-      listName: "CFOs — Fintech",
-      snippet: "Thanks for reaching out — happy to grab 15 min next week, does Tuesday work?",
-      tag: "Meeting Request",
-      hubspotUrl: "https://app.hubspot.com/contacts/0/contact/12345",
-      followedUp: false,
-      timestamp: "11:14 AM",
-    },
-    {
-      id: "d2",
-      sender: "Priya Nair",
-      listId: "list-2",
-      listName: "VP Eng — Series B SaaS",
-      snippet: "Not the right time for us, budget's locked for this quarter.",
-      tag: "Objection",
-      hubspotUrl: "https://app.hubspot.com/contacts/0/contact/12346",
-      followedUp: false,
-      timestamp: "01:47 PM",
-    },
-    {
-      id: "d3",
-      sender: "Sam Whitfield",
-      listId: "list-1",
-      listName: "CFOs — Fintech",
-      snippet: "Thanks, but not interested at the moment.",
-      tag: "Not Interested",
-      hubspotUrl: "https://app.hubspot.com/contacts/0/contact/12347",
-      followedUp: true,
-      timestamp: "03:02 PM",
-    },
-  ],
-};
-
-const notificationSettings: NotificationSettings = {
-  emailEnabled: true,
-  emailAddress: "pm@heuristicworks.com",
-  slackEnabled: true,
-  slackChannel: "#outreach-digest",
+const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  emailEnabled: false,
+  emailAddress: "",
+  slackEnabled: false,
+  slackChannel: "",
   digestTime: "17:00",
-  instantAlertOnMeetingRequest: true,
+  instantAlertOnMeetingRequest: false,
 };
 
-export function getLists() {
-  return lists;
+function bootstrap() {
+  ensureDataDir();
+  ensureDataDir("run-log");
+  ensureDataDir("digest");
+  if (!listFiles(".").includes("lists.json")) writeJson("lists.json", DEFAULT_LISTS);
+  if (!listFiles(".").includes("settings.json")) writeJson("settings.json", DEFAULT_SETTINGS);
+  if (!listFiles(".").includes("notifications.json")) writeJson("notifications.json", DEFAULT_NOTIFICATIONS);
+  if (!listFiles(".").includes("pending.json")) writeJson("pending.json", []);
+  if (!listFiles(".").includes("contacted.json")) writeJson("contacted.json", []);
+  if (!listFiles(".").includes("run-state.json")) writeJson("run-state.json", { paused: false });
+}
+bootstrap();
+
+export function getLists(): OutreachList[] {
+  return readJson("lists.json", DEFAULT_LISTS);
+}
+
+export function saveLists(lists: OutreachList[]) {
+  writeJson("lists.json", lists);
 }
 
 export function setListActive(id: string, active: boolean) {
+  const lists = getLists();
   const l = lists.find((x) => x.id === id);
   if (l) l.active = active;
+  saveLists(lists);
   return l;
 }
 
 export function upsertList(input: Omit<OutreachList, "id"> & { id?: string }) {
+  const lists = getLists();
   if (input.id) {
     const existing = lists.find((x) => x.id === input.id);
     if (existing) {
       Object.assign(existing, input);
+      saveLists(lists);
       return existing;
     }
   }
   const created: OutreachList = {
-    id: `list-${Date.now()}`,
-    priority: lists.length + 1,
     ...input,
+    id: input.id ?? `list-${Date.now()}`,
   };
   lists.push(created);
+  saveLists(lists);
   return created;
 }
 
 export function deleteList(id: string) {
-  const idx = lists.findIndex((x) => x.id === id);
-  if (idx >= 0) lists.splice(idx, 1);
+  const lists = getLists().filter((x) => x.id !== id);
+  saveLists(lists);
 }
 
-export function getSettings() {
-  return settings;
+export function getSettings(): GlobalSettings {
+  return readJson("settings.json", DEFAULT_SETTINGS);
 }
 
 export function updateSettings(patch: Partial<GlobalSettings>) {
-  Object.assign(settings, patch);
+  const settings = { ...getSettings(), ...patch };
+  writeJson("settings.json", settings);
   return settings;
 }
 
+function runLogPath(date: string) {
+  return `run-log/${date}.json`;
+}
+
+export function getRunLog(date: string): RunLogEntry[] {
+  return readJson(runLogPath(date), []);
+}
+
+export function appendRunLogEntry(date: string, entry: RunLogEntry) {
+  const log = getRunLog(date);
+  log.push(entry);
+  writeJson(runLogPath(date), log);
+}
+
 export function getTodayRun() {
-  const totalSent = runLog.filter((r) => r.status === "sent").length;
+  const date = todayIso();
+  const log = getRunLog(date);
+  const lists = getLists();
+  const totalSent = log.filter((r) => r.status === "sent").length;
   const byList = lists.map((l) => ({
     listId: l.id,
     listName: l.name,
-    sent: runLog.filter((r) => r.listId === l.id && r.status === "sent").length,
+    sent: log.filter((r) => r.listId === l.id && r.status === "sent").length,
   }));
-  return { totalSent, dailyCap: settings.dailyCap, byList, log: runLog, paused: runPaused };
+  const settings = getSettings();
+  const runState = readJson("run-state.json", { paused: false });
+  return { totalSent, dailyCap: settings.dailyCap, byList, log, paused: runState.paused };
 }
 
-let runPaused = false;
 export function setRunPaused(paused: boolean) {
-  runPaused = paused;
-  return runPaused;
+  writeJson("run-state.json", { paused });
+  return paused;
 }
 
-export function getPending() {
-  return pending;
+export function getPending(): PendingRequest[] {
+  return readJson("pending.json", []);
+}
+
+export function savePending(pending: PendingRequest[]) {
+  writeJson("pending.json", pending);
+}
+
+export function addPending(entry: PendingRequest) {
+  const pending = getPending();
+  pending.push(entry);
+  savePending(pending);
 }
 
 export function withdrawPending(id: string) {
-  const idx = pending.findIndex((p) => p.id === id);
-  if (idx >= 0) pending.splice(idx, 1);
+  savePending(getPending().filter((p) => p.id !== id));
 }
 
-export function getDigestDates() {
-  return Object.keys(digestByDate).sort().reverse();
+export function getContactedUrls(): string[] {
+  return readJson("contacted.json", []);
 }
 
-export function getDigest(date: string) {
-  return digestByDate[date] ?? [];
+export function markContacted(linkedinUrl: string) {
+  const contacted = getContactedUrls();
+  if (!contacted.includes(linkedinUrl)) {
+    contacted.push(linkedinUrl);
+    writeJson("contacted.json", contacted);
+  }
+}
+
+function digestPath(date: string) {
+  return `digest/${date}.json`;
+}
+
+export function getDigestDates(): string[] {
+  return listFiles("digest")
+    .map((f) => f.replace(/\.json$/, ""))
+    .sort()
+    .reverse();
+}
+
+export function getDigest(date: string): DigestReply[] {
+  return readJson(digestPath(date), []);
+}
+
+export function saveDigest(date: string, replies: DigestReply[]) {
+  writeJson(digestPath(date), replies);
+}
+
+export function appendDigestReply(date: string, reply: DigestReply) {
+  const replies = getDigest(date);
+  replies.push(reply);
+  saveDigest(date, replies);
 }
 
 export function setReplyTag(date: string, replyId: string, tag: IntentTag) {
-  const reply = digestByDate[date]?.find((r) => r.id === replyId);
-  if (reply) reply.tag = tag;
+  const replies = getDigest(date);
+  const reply = replies.find((r) => r.id === replyId);
+  if (reply) {
+    reply.tag = tag;
+    saveDigest(date, replies);
+  }
   return reply;
 }
 
 export function setReplyFollowedUp(date: string, replyId: string, followedUp: boolean) {
-  const reply = digestByDate[date]?.find((r) => r.id === replyId);
-  if (reply) reply.followedUp = followedUp;
+  const replies = getDigest(date);
+  const reply = replies.find((r) => r.id === replyId);
+  if (reply) {
+    reply.followedUp = followedUp;
+    saveDigest(date, replies);
+  }
   return reply;
 }
 
-export function getNotificationSettings() {
-  return notificationSettings;
+export function getNotificationSettings(): NotificationSettings {
+  return readJson("notifications.json", DEFAULT_NOTIFICATIONS);
 }
 
 export function updateNotificationSettings(patch: Partial<NotificationSettings>) {
-  Object.assign(notificationSettings, patch);
-  return notificationSettings;
+  const settings = { ...getNotificationSettings(), ...patch };
+  writeJson("notifications.json", settings);
+  return settings;
 }
 
 export function getHealth() {
+  const pending = getPending();
+  const settings = getSettings();
   return {
-    acceptanceRate7d: 0.24,
-    acceptanceRate30d: 0.21,
-    positiveReplyRate7d: 0.08,
-    positiveReplyRate30d: 0.06,
+    acceptanceRate7d: 0,
+    acceptanceRate30d: 0,
+    positiveReplyRate7d: 0,
+    positiveReplyRate30d: 0,
     pendingCount: pending.length,
     pendingCapWarningAt: settings.pendingCapWarningAt,
-    status: "green" as "green" | "yellow" | "red",
+    status: pending.length >= settings.pendingCapWarningAt * 0.9 ? ("yellow" as const) : ("green" as const),
   };
 }

@@ -31,11 +31,35 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
   const [notifications, setNotifications] = useState<NotificationSettings | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [linkedin, setLinkedin] = useState<{ connected: boolean; savedAt: string | null }>({
+    connected: false,
+    savedAt: null,
+  });
+  const [connecting, setConnecting] = useState(false);
+  const [connectMessage, setConnectMessage] = useState<string | null>(null);
+
+  function refreshLinkedinStatus() {
+    fetch("/api/linkedin/status").then((r) => r.json()).then(setLinkedin);
+  }
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then(setSettings);
     fetch("/api/notifications").then((r) => r.json()).then(setNotifications);
+    refreshLinkedinStatus();
   }, []);
+
+  async function connectLinkedin() {
+    setConnecting(true);
+    setConnectMessage(null);
+    const res = await fetch("/api/linkedin/connect", { method: "POST" });
+    const data = await res.json();
+    setConnectMessage(data.message);
+    setConnecting(false);
+    // Login happens in a separate visible window; poll status a couple times
+    // rather than assuming completion.
+    const poll = setInterval(refreshLinkedinStatus, 5000);
+    setTimeout(() => clearInterval(poll), 5 * 60 * 1000);
+  }
 
   async function saveSettings(patch: Partial<GlobalSettings>) {
     if (!settings) return;
@@ -176,32 +200,42 @@ export default function SettingsPage() {
       </Card>
 
       <Card>
-        <CardTitle>Connections</CardTitle>
+        <CardTitle subtitle="Agent 1 and Agent 2 both reuse this saved browser session">Connections</CardTitle>
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-gray-900">LinkedIn (via Unipile)</div>
-              <div className="text-xs text-gray-500">Used by Agent 1 to dispatch connection requests</div>
+              <div className="text-sm font-medium text-gray-900">LinkedIn</div>
+              <div className="text-xs text-gray-500">
+                {linkedin.connected
+                  ? `Session saved ${linkedin.savedAt ? new Date(linkedin.savedAt).toLocaleString() : ""}`
+                  : "Opens a real browser window for you to log into LinkedIn normally"}
+              </div>
             </div>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                settings.linkedinConnected ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-              }`}
-            >
-              {settings.linkedinConnected ? "Connected" : "Disconnected"}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                  linkedin.connected ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
+                }`}
+              >
+                {linkedin.connected ? "Connected" : "Not connected"}
+              </span>
+              <button
+                onClick={connectLinkedin}
+                disabled={connecting}
+                className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
+              >
+                {linkedin.connected ? "Reconnect" : "Connect LinkedIn"}
+              </button>
+            </div>
           </div>
+          {connectMessage && <p className="text-xs text-gray-500">{connectMessage}</p>}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-medium text-gray-900">HubSpot</div>
-              <div className="text-xs text-gray-500">Contact upsert + intent tagging destination</div>
+              <div className="text-xs text-gray-500">Deferred — replies are tracked in the dashboard for now</div>
             </div>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                settings.hubspotConnected ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-              }`}
-            >
-              {settings.hubspotConnected ? "Connected" : "Disconnected"}
+            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+              Not configured
             </span>
           </div>
         </div>

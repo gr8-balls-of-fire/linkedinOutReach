@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 const NAV = [
   { href: "/", label: "Dashboard" },
@@ -14,6 +14,13 @@ const NAV = [
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+
+  useEffect(() => {
+    const ping = () => fetch("/api/heartbeat", { method: "POST" }).catch(() => {});
+    ping();
+    const interval = setInterval(ping, 20_000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="flex min-h-screen">

@@ -6,8 +6,12 @@ batch of personalized connection requests across one or more target lists; Agent
 inbound replies, tags their intent, and produces a daily digest so the user can follow up.
 
 **Spec:** `outreach.md` (original PRD — see "Deviations from outreach.md" below for what changed after review)
-**Status (2026-09-23):** UI scaffolded with a stubbed in-memory backend, pending review. Agent 3 (LinkedIn →
-verified email finder) discussed and put on hold — not in scope yet.
+**Status (2026-09-23):** Real backend built — file-backed JSON store, Playwright-driven LinkedIn automation for
+both agents, manual "run now" triggers in the UI, Task Scheduler registration scripts. Not yet installer-packaged.
+Live end-to-end test with 2 real contacts pending (needs the user to complete the LinkedIn login step — see
+"How to actually test this" below). Agent 3 (LinkedIn → verified email finder) and a self-built lightweight
+email verifier were discussed and explicitly deferred to a later phase — not in scope yet. GitHub public repo
+created and pushed: `gr8-balls-of-fire/linkedinOutReach`.
 
 ## Why this exists
 Standalone lead-gen tool to feed top-of-funnel pipeline (e.g. for Spexsure and other Heuristicworks products),
@@ -25,6 +29,21 @@ independent of the Spexsure SaaS product itself. Not part of the spexsure.com co
 - **Agent 3 (email verification) — on hold.** Originally proposed as a follow-on: given a LinkedIn profile, find
   and verify a work email via a provider (Hunter.io / Apollo.io / RocketReach), triggered after connection
   acceptance (not before, to avoid spending lookup credits on people who never connect). Not started.
+- **List source: search URL OR CSV import.** A list can be sourced either from a Sales Navigator search URL or
+  from a pasted/uploaded CSV export (Name/Title/Company/LinkedIn URL columns). CSV import exists because there's
+  no LinkedIn API to walk search-result pages without session automation — CSV export is LinkedIn's own native,
+  lower-risk feature for the "who to contact" half of the problem. `search_url` lists are recognized by the data
+  model but **live scraping of them is not implemented** — Agent 1 currently only sends to `csv`-sourced leads
+  and logs a skip note for `search_url` lists. Revisit if/when that's needed.
+- **No paid LinkedIn API exists for any of this.** Corrected mid-conversation: there is no official third-party
+  API for Sales Navigator search or sending connection requests. Automation happens via a real, authenticated
+  browser session (Playwright, driving the user's own logged-in LinkedIn) — same category of tool as
+  Unipile/PhantomBuster/Dux-Soup, just self-built and free instead of a paid hosted service. This is also why
+  the original PRD's dedicated-IP/proxy and randomized-delay requirements exist: they're mitigations against
+  LinkedIn detecting the automation, not features of an API.
+- **A lightweight, self-built email verifier (DNS MX + SMTP `RCPT TO` handshake, no paid API) is feasible and
+  explicitly deferred to Phase 2.** Main blocker to validate first: most residential/office ISPs block outbound
+  port 25, which this technique requires — test that before investing further.
 
 ## Tech decision: web app on localhost, not a packaged install
 Matches the rest of the Heuristicworks stack (Spexsure, ArcAI, Meridian) — Next.js dev server on `localhost`,
@@ -34,35 +53,90 @@ in a terminal rather than a double-click desktop icon.
 
 ## Current build status
 - **UI: built**, all 5 screens live and manually verified (curl 200s on every route + API endpoint).
-- **Backend: stubbed.** `lib/store.ts` is an in-memory mock store — no real Unipile/LinkedAPI, HubSpot, or
-  email/Slack integration yet. Resets on dev server restart. This is intentional: UI/UX is under review before
-  wiring the real backend.
-- **Next step:** user reviews UI/UX at `localhost:3001` (port 3000 was occupied during dev), then gives go-ahead
-  to build the real backend (n8n/Make orchestration or direct API integration — not yet decided).
+- **Backend: real, file-backed.** `lib/store.ts` reads/writes `data/*.json` on disk — survives restarts and
+  process kills (every write is synchronous, so there's no in-memory state to lose). No HubSpot or email/Slack
+  integration — explicitly deferred; digest lives in the dashboard only for now.
+- **LinkedIn automation: Playwright**, driving the user's own real logged-in session (not a paid API — see
+  deviations above for why). Session is saved once via a headed-browser login flow and reused headlessly by
+  both agents.
+- **Agent 1 (`scripts/agent1-outbound.ts`)**: reads active lists + settings from `data/`, respects the shared
+  daily/weekly cap, skips already-contacted profiles (`data/contacted.json`), sends a connection request + note
+  via Playwright to each `csv`-sourced lead within budget, random delay between sends, logs every attempt to
+  `data/run-log/<date>.json`, adds sent ones to `data/pending.json`.
+- **Agent 2 (`scripts/agent2-digest.ts`)**: reads the LinkedIn messaging inbox via Playwright, matches senders
+  against `data/pending.json` by name, classifies intent with a **keyword-based classifier** (`lib/intent.ts` —
+  no LLM call, no API key needed; swapping in a real LLM call later only means changing that one function's
+  body), writes matched replies to `data/digest/<date>.json`.
+- **Manual "run now" triggers wired into the UI** so this can be tested without waiting for a schedule:
+  Dashboard has "Run Agent 1 now", Digest page has "Check for replies now". Both spawn the real script and show
+  its console output inline.
+- **Auto-shutdown**: the dashboard pings `/api/heartbeat` every 20s while a browser tab is open
+  (`components/app-shell.tsx`); `instrumentation.ts` starts a watchdog on server boot that exits the process
+  after 60s with no ping. Nothing to persist on exit — see above.
+- **Task Scheduler scripts written** (`scripts/register-tasks.ps1` / `unregister-tasks.ps1`) — create/remove the
+  two no-admin-required scheduled tasks, reading actual configured times out of `data/settings.json` /
+  `data/notifications.json`. **Not yet wired into an installer** — run manually for now.
+- **Not yet built**: the Inno Setup installer, portable-Node bundling, hidden-console `.vbs` launcher. These
+  were scoped in conversation but not started — the current priority is validating the live LinkedIn mechanism
+  works at all before packaging it.
+
+## How to actually test this (needs you, not just me)
+I can't complete the LinkedIn login or watch your 2 test contacts reply — that part is inherently yours:
+1. `npm run connect-linkedin` — opens a real, visible Chromium window. Log into LinkedIn in it normally. Once
+   you land on your feed, the script detects it and saves the session to `data/linkedin-session.json` (gitignored,
+   never commit this file — it's your live session).
+2. In the dashboard (`npm run dev`, then the Lists page), add a list with source type **CSV import**, containing
+   your 2 test contacts' names + LinkedIn profile URLs, and a draft message.
+3. On the Dashboard, click **"Run Agent 1 now"**. Watch the output panel — it'll say `Sent to <name>` for each,
+   or explain why it skipped/failed.
+4. Once your contacts reply, go to the Digest page and click **"Check for replies now"**. It should show their
+   replies tagged by intent.
+5. Report back what actually happened (especially any Playwright selector failures in the output — the
+   `sendConnectionRequest` / `readRecentInboxMessages` selectors in `lib/linkedin/actions.ts` are best-effort
+   against LinkedIn's current DOM and are the most likely thing to need repair).
 
 ## Repo structure
 ```
 spexsureOutReach/
-├── CLAUDE.md              ← this file
-├── outreach.md            ← original PRD (see deviations above)
+├── CLAUDE.md                    ← this file
+├── outreach.md                  ← original PRD (see deviations above)
 ├── package.json
-├── next.config.js
+├── next.config.js               ← experimental.instrumentationHook: true (needed for the auto-shutdown watchdog)
 ├── tailwind.config.ts
 ├── postcss.config.js
 ├── tsconfig.json
+├── instrumentation.ts           ← starts the heartbeat watchdog on server boot
+├── data/                        ← gitignored. lists.json, settings.json, notifications.json, pending.json,
+│                                    contacted.json, run-state.json, linkedin-session.json, run-log/<date>.json,
+│                                    digest/<date>.json. Created on first run by lib/store.ts's bootstrap().
 ├── lib/
-│   └── store.ts           ← stub "backend" — in-memory data + functions; swap for real integrations later
+│   ├── data-file.ts             ← readJson/writeJson/listFiles helpers over data/
+│   ├── store.ts                 ← file-backed data layer; same function signatures the API routes call
+│   ├── intent.ts                ← classifyIntent(text) — keyword-based, swap for an LLM call later
+│   ├── merge-tags.ts            ← renderTemplate() for {{firstName}}/{{company}}/{{title}}, firstNameOf()
+│   ├── heartbeat.ts             ← recordHeartbeat() + startWatchdog() — auto-shutdown after 60s idle
+│   ├── run-script.ts            ← spawns a tsx script, captures stdout/stderr, used by the "run now" API routes
+│   └── linkedin/
+│       ├── session.ts           ← sessionPath()/hasSession()/sessionSavedAt() over data/linkedin-session.json
+│       └── actions.ts           ← sendConnectionRequest(), readRecentInboxMessages() — Playwright, best-effort
+│                                    selectors against LinkedIn's DOM, most likely thing to need repair
+├── scripts/
+│   ├── connect-linkedin.ts      ← headed browser login flow, saves session (npm run connect-linkedin)
+│   ├── agent1-outbound.ts       ← real send logic (npm run agent1 / Task Scheduler)
+│   ├── agent2-digest.ts         ← real reply-detection + tagging logic (npm run agent2 / Task Scheduler)
+│   ├── register-tasks.ps1       ← creates the 2 no-admin scheduled tasks, reads times from data/*.json
+│   └── unregister-tasks.ps1     ← removes them
 ├── components/
-│   ├── app-shell.tsx      ← sidebar nav shell (Dashboard / Lists / Pending / Digest / Settings)
-│   └── ui.tsx             ← Card, CardTitle, Badge, ProgressBar, Toggle — shared primitives
+│   ├── app-shell.tsx            ← sidebar nav shell + heartbeat ping every 20s
+│   └── ui.tsx                   ← Card, CardTitle, Badge, ProgressBar, Toggle — shared primitives
 └── app/
     ├── layout.tsx
     ├── globals.css
-    ├── page.tsx           ← Dashboard: today's send progress, per-list breakdown, activity log, health, pause/resume
-    ├── lists/page.tsx     ← Lists & Drafts: add/edit/delete list, active toggle, priority
-    ├── pending/page.tsx   ← Pending Queue: outstanding requests, age, auto-withdraw countdown, manual withdraw
-    ├── digest/page.tsx    ← Response Digest: date picker, intent-tag counts, per-reply table (retag, mark followed up)
-    ├── settings/page.tsx  ← Global caps, send window, connections status, digest delivery (email/Slack/instant alert)
+    ├── page.tsx                 ← Dashboard: send progress, activity log, health, pause/resume, "Run Agent 1 now"
+    ├── lists/page.tsx           ← Lists & Drafts: search-URL or CSV-import source, per-list draft, priority
+    ├── pending/page.tsx         ← Pending Queue: outstanding requests, age, auto-withdraw countdown, manual withdraw
+    ├── digest/page.tsx          ← Response Digest: date picker, intent counts, reply table, "Check for replies now"
+    ├── settings/page.tsx        ← Caps, send window, real LinkedIn connect button + status, digest delivery
     └── api/
         ├── lists/route.ts, lists/[id]/route.ts
         ├── settings/route.ts
@@ -70,7 +144,11 @@ spexsureOutReach/
         ├── pending/route.ts, pending/[id]/route.ts
         ├── digest/route.ts, digest/[id]/route.ts
         ├── notifications/route.ts
-        └── health/route.ts
+        ├── health/route.ts
+        ├── heartbeat/route.ts        ← records a ping; watchdog in lib/heartbeat.ts checks it
+        ├── linkedin/status/route.ts  ← GET — is there a saved session
+        ├── linkedin/connect/route.ts ← POST — spawns connect-linkedin.ts detached (opens a visible browser)
+        └── agents/run-outbound/route.ts, agents/run-digest/route.ts ← POST — spawn agent1/agent2, wait, return output
 ```
 
 ## Tech stack
@@ -78,21 +156,35 @@ spexsureOutReach/
 |---|---|
 | Framework | Next.js 14.2.35 App Router, TypeScript |
 | Styling | Tailwind CSS (brand color `#4f6ef7`, matches Spexsure indigo) |
-| Backend (current) | In-memory stub in `lib/store.ts`, exposed via Next.js route handlers |
-| Backend (planned) | Not decided — likely n8n/Make orchestration per `outreach.md`, calling Unipile/LinkedAPI + HubSpot |
-| CRM | HubSpot (not yet integrated — digest rows link out via placeholder `hubspotUrl`) |
+| Backend | File-backed JSON store (`lib/store.ts` + `data/*.json`), exposed via Next.js route handlers |
+| LinkedIn automation | Playwright (`playwright` + Chromium), driving the user's own real session — free, self-hosted, no paid API/service. Session saved via `scripts/connect-linkedin.ts`, reused headlessly by both agents |
+| Script runner | `tsx` — runs the TypeScript agent scripts directly (`npm run agent1` / `agent2` / `connect-linkedin`) without a separate build step |
+| Scheduling | Windows Task Scheduler (native, free, no admin rights needed) via `scripts/register-tasks.ps1` — not n8n/Make, decided against per-list automation platform in favor of a local install |
+| Intent classification | Keyword-based (`lib/intent.ts`) — no LLM call, no API key. Swappable later |
+| CRM | None — explicitly deferred. Digest replies are tracked in the dashboard only for now (`hubspotUrl` field kept empty, UI hides the link when absent) |
 
-## API seam for the real backend
-Every page talks to `/api/*` route handlers rather than importing `lib/store.ts` data directly into components.
-This is deliberate: when the real backend (n8n webhook, direct Unipile/HubSpot calls, or a real DB) is ready,
-only the route handlers need to change — no page/component changes required.
+## API seam
+Every page talks to `/api/*` route handlers rather than importing `lib/store.ts` directly into components. This
+held up through the real-backend build: `lib/store.ts`'s function signatures didn't change when it went from
+in-memory to file-backed, and the agent scripts import the exact same functions the API routes use — one source
+of truth for reads/writes, whether it's a page, an API route, or a scheduled script touching the data.
 
 ## Running locally
 ```
 npm install
+npx playwright install chromium   # one-time, ~300MB
 npm run dev
 ```
 Next.js will pick the next free port if 3000 is taken (was on 3001 during this build).
+
+## Known limitations / fragile spots
+- `lib/linkedin/actions.ts` selectors are best-effort against LinkedIn's current DOM — not verified against a
+  real account by me, since that needs your login. Most likely thing to break first.
+- `search_url`-sourced lists are not scraped — only `csv`-sourced leads actually get contacted right now.
+- Auto-withdrawal of stale (>14 day) pending requests is bookkeeping-only — nothing yet visits LinkedIn's sent-
+  invitations page to actually click "Withdraw" there.
+- Email verifier (Phase 2) not started; port-25 outbound reachability from your network is unvalidated.
+- No installer yet — Task Scheduler scripts exist but aren't wired into a packaged install flow.
 
 ## Key decisions log
 [2026-09-23] Web app on localhost (Next.js), not a packaged desktop install — see rationale above
@@ -100,3 +192,15 @@ Next.js will pick the next free port if 3000 is taken (was on 3001 during this b
 [2026-09-23] Agent 3 (LinkedIn → verified email) scoped but put on hold, not built
 [2026-09-23] Daily/weekly send caps are global across all active lists, not per-list
 [2026-09-23] No LLM-generated outreach copy — user supplies the draft message per list
+[2026-09-23] Public GitHub repo created: gr8-balls-of-fire/linkedinOutReach; code pushed
+[2026-09-23] Windows-only distribution target; batch file + free installer (Inno Setup), not Electron/Tauri
+[2026-09-23] Console hidden via a .vbs launcher wrapper (Windows Script Host, free, built-in) — not built yet
+[2026-09-23] Agent cron work runs via Windows Task Scheduler (native, free, no admin needed), decoupled from
+             the on-demand dashboard — not a persistent background service
+[2026-09-23] Dashboard auto-shuts-down after 60s with no heartbeat ping; safe because every store write is
+             already synchronous to data/*.json — nothing in-memory to lose
+[2026-09-23] Lists can source leads from a Sales Navigator search URL or a pasted/uploaded CSV export
+[2026-09-23] No official LinkedIn API exists for any of this — corrected mid-conversation; automation is
+             Playwright driving the user's own real session, chosen over a paid service (Unipile) for cost
+[2026-09-23] HubSpot integration deferred indefinitely; dashboard is the system of record for now
+[2026-09-23] Lightweight self-built email verifier (DNS MX + SMTP handshake) deferred to Phase 2

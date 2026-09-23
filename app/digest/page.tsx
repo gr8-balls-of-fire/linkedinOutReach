@@ -22,6 +22,8 @@ export default function DigestPage() {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [replies, setReplies] = useState<DigestReply[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [checkOutput, setCheckOutput] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/digest")
@@ -62,6 +64,22 @@ export default function DigestPage() {
     return acc;
   }, {});
 
+  async function checkNow() {
+    setChecking(true);
+    setCheckOutput(null);
+    const res = await fetch("/api/agents/run-digest", { method: "POST" });
+    const data = await res.json();
+    setCheckOutput(data.output);
+    setChecking(false);
+    const today = new Date().toISOString().slice(0, 10);
+    fetch("/api/digest")
+      .then((r) => r.json())
+      .then((d) => {
+        setDates(d.dates);
+        setSelectedDate(today);
+      });
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -69,18 +87,34 @@ export default function DigestPage() {
           <h1 className="text-xl font-semibold text-gray-900">Response Digest</h1>
           <p className="text-sm text-gray-500">Agent 2 — inbound replies grouped by intent, one day after send</p>
         </div>
-        <select
-          className="rounded-md border border-gray-200 px-3 py-2 text-sm"
-          value={selectedDate ?? ""}
-          onChange={(e) => setSelectedDate(e.target.value)}
-        >
-          {dates.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={checkNow}
+            disabled={checking}
+            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+          >
+            {checking ? "Checking…" : "Check for replies now"}
+          </button>
+          <select
+            className="rounded-md border border-gray-200 px-3 py-2 text-sm"
+            value={selectedDate ?? ""}
+            onChange={(e) => setSelectedDate(e.target.value)}
+          >
+            {dates.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
+
+      {checkOutput && (
+        <Card>
+          <CardTitle>Last check output</CardTitle>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs text-gray-600">{checkOutput}</pre>
+        </Card>
+      )}
 
       <div className="grid grid-cols-4 gap-4">
         {TAGS.map((tag) => (
@@ -127,14 +161,18 @@ export default function DigestPage() {
                   </div>
                 </td>
                 <td className="py-3">
-                  <a
-                    href={r.hubspotUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-medium text-brand-600 hover:text-brand-700"
-                  >
-                    View contact
-                  </a>
+                  {r.hubspotUrl ? (
+                    <a
+                      href={r.hubspotUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-medium text-brand-600 hover:text-brand-700"
+                    >
+                      View contact
+                    </a>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
                 </td>
                 <td className="py-3">
                   <input
